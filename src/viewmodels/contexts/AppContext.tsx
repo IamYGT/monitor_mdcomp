@@ -200,18 +200,47 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children, wsUrl }) => 
     };
 
     const handleError = (error: Event) => {
+        // Hata türünü belirleme ve anlamlı mesaj oluşturma
+        let errorMessage = "WebSocket bağlantı hatası";
+        let errorType: LogType = 'error';
+        
+        if (error.type === 'error') {
+            errorMessage = "Sunucu ile iletişim kurulamadı. Ağ bağlantınızı kontrol edin.";
+        } else if (error.type === 'timeout') {
+            errorMessage = "Bağlantı zaman aşımına uğradı. Sunucu yanıt vermiyor.";
+        }
+        
+        // Bağlantı hata durumunu güncelle
         dispatch({
             type: 'SET_CONNECTION_STATE',
-            payload: { connectingError: 'WebSocket bağlantı hatası' }
+            payload: { connectingError: errorMessage }
         });
+        
+        // Hatayı logla
         dispatch({
             type: 'ADD_LOG',
-            payload: { message: `WebSocket hatası: ${error}`, type: 'error' }
+            payload: { 
+                message: `WebSocket hatası: ${errorMessage} (${error.type})`, 
+                type: errorType 
+            }
         });
+        
+        // İstatistikleri güncelle
         dispatch({
             type: 'UPDATE_STATS',
             payload: { failedRequests: state.stats.failedRequests + 1 }
         });
+        
+        // Kullanıcıya öneriler sun
+        setTimeout(() => {
+            dispatch({
+                type: 'ADD_LOG',
+                payload: { 
+                    message: "Bağlantı sorunu devam ediyorsa, yedek sunucu seçeneğini kullanabilir veya istemci moduna geçebilirsiniz.", 
+                    type: 'info' 
+                }
+            });
+        }, 3000);
     };
 
     const handleMessage = (message: WebSocketIncomingMessage) => {
@@ -295,18 +324,59 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children, wsUrl }) => 
         wsService.addErrorListener(handleError);
         wsService.addMessageListener(handleMessage);
 
+        // Kullanıcıya bağlantı denemesi hakkında bilgi ver
+        dispatch({
+            type: 'ADD_LOG',
+            payload: { 
+                message: `${wsUrl} adresine bağlantı kurulmaya çalışılıyor...`, 
+                type: 'info' 
+            }
+        });
+
+        // Bağlantı sorunlarını daha iyi yönetmek için ek ayarlar
+        wsService.updateReconnectSettings(10, 2000); // Daha fazla deneme ve artan bekleme süresi
+        wsService.setConnectionTimeout(15000); // 15 saniye bağlantı zaman aşımı
+        
         // Bağlantıyı başlat
+        console.log(`WebSocket bağlantısı başlatılıyor: ${wsUrl}`);
         wsService.connect();
+
+        // Bağlantı durumunu periyodik olarak kontrol et
+        const connectionCheckInterval = setInterval(() => {
+            const isCurrentlyConnected = wsService.isConnected();
+            const connectionStatus = wsService.getConnectionStatus();
+            
+            // Bağlantı durum değişimini logla
+            if (isCurrentlyConnected !== state.connection.isConnected) {
+                dispatch({
+                    type: 'ADD_LOG',
+                    payload: { 
+                        message: `Bağlantı durumu değişti: ${connectionStatus}`, 
+                        type: isCurrentlyConnected ? 'success' : 'warning' 
+                    }
+                });
+                
+                dispatch({
+                    type: 'SET_CONNECTION_STATE',
+                    payload: { 
+                        isConnected: isCurrentlyConnected,
+                        connectingError: isCurrentlyConnected ? null : 'Bağlantı kesildi'
+                    }
+                });
+            }
+        }, 5000);
 
         // Temizlik işlemleri
         return () => {
+            console.log('WebSocket kaynakları temizleniyor');
             wsService.removeConnectListener(handleConnect);
             wsService.removeDisconnectListener(handleDisconnect);
             wsService.removeErrorListener(handleError);
             wsService.removeMessageListener(handleMessage);
             wsService.disconnect();
+            clearInterval(connectionCheckInterval);
         };
-    }, []);
+    }, [wsUrl]); // wsUrl değişirse etkileşimi yeniden kur
 
     // Periyodik olarak simüle edilmiş sistem verilerini güncelle
     useEffect(() => {

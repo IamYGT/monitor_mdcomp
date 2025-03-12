@@ -42,6 +42,8 @@ class WebSocketService {
   private reconnectInterval = 1000;
   private autoReconnect = true;
   private mockMode = false; // Gerçek bağlantı olmadan test etmek için mock modu
+  private connectionTimeout = 10000; // 10 saniye timeout süresi
+  private timeoutTimer: ReturnType<typeof setTimeout> | null = null;
 
   private messageListeners: MessageCallback[] = [];
   private connectListeners: ConnectionCallback[] = [];
@@ -55,23 +57,62 @@ class WebSocketService {
     if (
       url.includes("example.com") ||
       url.includes("localhost") ||
-      (process.env.NODE_ENV === "development" &&
-        !url.includes("154.194.35.202"))
+      url.includes("mock.local") ||
+      (import.meta.env.DEV && !url.includes("154.194.35.202"))
     ) {
-      console.log(
-        "WebSocket servisi mock modunda çalışıyor. Gerçek bağlantı kurulmayacak."
-      );
+      // Localhost ve port bilgisi eklenmiş mi kontrol et
+      if (url.includes("localhost") && !url.match(/:\d+$/)) {
+        // Varsayılan olarak 8080 portunu ekle
+        this.url = `${url}:8080`;
+        console.log(`WebSocket URL'e varsayılan port eklendi: ${this.url}`);
+      }
+
+      console.log(`WebSocket servisi mock modunda çalışıyor: ${this.url}`);
       this.mockMode = true;
+
+      // Mock mod tipini belirle
+      const isMockServer = url.includes("localhost:8080");
+      if (isMockServer) {
+        console.log(
+          "Localhost:8080 üzerinde WebSocket mock sunucusu kullanılıyor"
+        );
+      } else {
+        console.log("Tamamen simüle edilmiş WebSocket modu (sunucu yok)");
+      }
     } else if (url.includes("154.194.35.202")) {
       console.log(
         "WebSocket servisi gerçek IP adresi ile çalışıyor: 154.194.35.202"
       );
       this.mockMode = false;
+
+      // URL'de port kontrolü ve düzeltme
+      if (!url.match(/:\d+$/)) {
+        // WSS bağlantıları için standart port 443'ü, WS için 80'i ekle
+        const isSecure = url.startsWith("wss://");
+        this.url = `${url}:${isSecure ? "443" : "80"}`;
+        console.log(`WebSocket URL'e port eklendi: ${this.url}`);
+      }
+
+      // SSL/TLS sertifika hataları için uyarı
+      if (url.startsWith("wss://")) {
+        console.log(
+          "Güvenli WebSocket (WSS) bağlantısı kullanılıyor. Sertifika geçerli olmalıdır."
+        );
+      } else {
+        console.log("UYARI: Güvensiz WebSocket (WS) bağlantısı kullanılıyor.");
+      }
     }
   }
 
   public static getInstance(url: string): WebSocketService {
     if (!WebSocketService.instance) {
+      WebSocketService.instance = new WebSocketService(url);
+    } else if (WebSocketService.instance.url !== url) {
+      // URL değiştiyse mevcut bağlantıyı kapat ve yeni bir bağlantı oluştur
+      console.log(
+        `WebSocket URL değişti: ${WebSocketService.instance.url} -> ${url}`
+      );
+      WebSocketService.instance.disconnect();
       WebSocketService.instance = new WebSocketService(url);
     }
     return WebSocketService.instance;
@@ -102,10 +143,53 @@ class WebSocketService {
 
     try {
       console.log(`WebSocket bağlanılıyor: ${this.url}`);
+
+      // Varolan WebSocket nesnesini temizle
+      if (this.ws) {
+        this.ws.onopen = null;
+        this.ws.onclose = null;
+        this.ws.onmessage = null;
+        this.ws.onerror = null;
+        this.ws.close();
+        this.ws = null;
+      }
+
+      // Yeni WebSocket bağlantısı oluştur
       this.ws = new WebSocket(this.url);
+
+      // Bağlantı timeout kontrolü
+      this.timeoutTimer = setTimeout(() => {
+        console.log(
+          `WebSocket bağlantı zaman aşımı: ${this.connectionTimeout}ms süre doldu`
+        );
+        if (this.ws && this.ws.readyState === WebSocket.CONNECTING) {
+          this.ws.close();
+          this.notifyErrorListeners(new Event("timeout"));
+          this.notifyDisconnectListeners();
+
+          // Yeniden bağlanma denemesi yap
+          if (
+            this.autoReconnect &&
+            this.reconnectAttempts < this.maxReconnectAttempts
+          ) {
+            this.reconnectAttempts++;
+            console.log(
+              `Zaman aşımı sonrası yeniden bağlanma denemesi ${this.reconnectAttempts}/${this.maxReconnectAttempts}`
+            );
+            setTimeout(
+              () => this.connect(),
+              this.reconnectInterval * this.reconnectAttempts
+            ); // Artan bekleme süresi
+          }
+        }
+      }, this.connectionTimeout);
 
       this.ws.onopen = () => {
         console.log("WebSocket bağlantısı kuruldu");
+        if (this.timeoutTimer) {
+          clearTimeout(this.timeoutTimer);
+          this.timeoutTimer = null;
+        }
         this.reconnectAttempts = 0;
         this.notifyConnectListeners();
       };
@@ -114,6 +198,10 @@ class WebSocketService {
         console.log(
           `WebSocket bağlantısı kapandı. Kod: ${event.code}, Neden: ${event.reason}`
         );
+        if (this.timeoutTimer) {
+          clearTimeout(this.timeoutTimer);
+          this.timeoutTimer = null;
+        }
         this.notifyDisconnectListeners();
         if (
           this.autoReconnect &&
@@ -123,7 +211,10 @@ class WebSocketService {
           console.log(
             `Yeniden bağlanma denemesi ${this.reconnectAttempts}/${this.maxReconnectAttempts}`
           );
-          setTimeout(() => this.connect(), this.reconnectInterval);
+          setTimeout(
+            () => this.connect(),
+            this.reconnectInterval * this.reconnectAttempts
+          );
         }
       };
 
@@ -139,10 +230,15 @@ class WebSocketService {
 
       this.ws.onerror = (error) => {
         console.error("WebSocket hatası:", error);
+        if (this.timeoutTimer) {
+          clearTimeout(this.timeoutTimer);
+          this.timeoutTimer = null;
+        }
         this.notifyErrorListeners(error);
       };
     } catch (error) {
       console.error("WebSocket bağlantısı oluşturulurken hata:", error);
+      this.notifyErrorListeners(new Event("error"));
     }
   }
 
@@ -181,9 +277,18 @@ class WebSocketService {
       return;
     }
 
+    if (this.timeoutTimer) {
+      clearTimeout(this.timeoutTimer);
+      this.timeoutTimer = null;
+    }
+
     if (this.ws) {
       this.autoReconnect = false;
-      this.ws.close();
+      try {
+        this.ws.close();
+      } catch (error) {
+        console.error("WebSocket kapatılırken hata:", error);
+      }
       this.ws = null;
     }
   }
@@ -349,8 +454,50 @@ class WebSocketService {
     return !!this.ws && this.ws.readyState === WebSocket.OPEN;
   }
 
+  // WebSocket bağlantısının durumunu metin olarak döndür
+  public getConnectionStatus(): string {
+    if (this.mockMode || this.url.includes("mock.local")) {
+      return "Bağlı (Mock Mod) - Gerçek veri yok";
+    }
+
+    if (!this.ws) {
+      return "Bağlantı Yok";
+    }
+
+    switch (this.ws.readyState) {
+      case WebSocket.CONNECTING:
+        return `Bağlanıyor... (${this.url})`;
+      case WebSocket.OPEN:
+        return `Bağlı (${this.url})`;
+      case WebSocket.CLOSING:
+        return "Kapanıyor...";
+      case WebSocket.CLOSED:
+        return `Bağlantı Kapalı (${this.reconnectAttempts}/${this.maxReconnectAttempts} deneme)`;
+      default:
+        return "Bilinmeyen Durum";
+    }
+  }
+
+  // Yeniden bağlanma ayarlarını güncelle
+  public updateReconnectSettings(maxAttempts: number, interval: number): void {
+    this.maxReconnectAttempts = maxAttempts;
+    this.reconnectInterval = interval;
+    console.log(
+      `Yeniden bağlantı ayarları güncellendi: ${maxAttempts} deneme, ${interval}ms aralık`
+    );
+  }
+
+  // Bağlantı zaman aşımı süresini ayarla
+  public setConnectionTimeout(timeout: number): void {
+    this.connectionTimeout = timeout;
+    console.log(
+      `WebSocket bağlantı zaman aşımı: ${timeout}ms olarak ayarlandı`
+    );
+  }
+
   public setAutoReconnect(value: boolean): void {
     this.autoReconnect = value;
+    console.log(`Otomatik yeniden bağlanma: ${value ? "etkin" : "devre dışı"}`);
   }
 
   private notifyMessageListeners(data: WebSocketIncomingMessage): void {

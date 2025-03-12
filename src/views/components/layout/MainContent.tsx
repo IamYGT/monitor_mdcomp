@@ -1,5 +1,5 @@
 import React, { ReactNode } from 'react';
-import { useAppContext } from '../../../viewmodels/contexts/AppContext';
+// useAppContext burada doğrudan kullanılmadığı için import kaldırıldı
 import StatusBar from './StatusBar';
 
 interface MainContentProps {
@@ -7,7 +7,7 @@ interface MainContentProps {
 }
 
 const MainContent: React.FC<MainContentProps> = ({ children }) => {
-    const { state } = useAppContext();
+    // StatusBar bileşeni kendi içinde useAppContext'i kullanıyor
 
     return (
         <div className="ml-64 p-6 bg-gray-900 min-h-screen">
