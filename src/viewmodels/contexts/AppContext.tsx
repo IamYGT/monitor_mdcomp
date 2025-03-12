@@ -10,7 +10,8 @@ const initialState: AppState = {
         isConnected: false,
         connectingError: null,
         activeSymbol: 'BINANCE:BTCUSDT',
-        debugMode: false
+        debugMode: false,
+        serverUrl: ''  // Default olarak boş, gerçek değer AppProvider'dan gelecek
     },
     stats: {
         activeConnections: 0,
@@ -165,7 +166,13 @@ interface AppProviderProps {
 
 // Provider bileşeni
 export const AppProvider: React.FC<AppProviderProps> = ({ children, wsUrl }) => {
-    const [state, dispatch] = useReducer(appReducer, initialState);
+    const [state, dispatch] = useReducer(appReducer, {
+        ...initialState,
+        connection: {
+            ...initialState.connection,
+            serverUrl: wsUrl  // WebSocket URL'sini connection state'ine yükle
+        }
+    });
     const wsService = WebSocketService.getInstance(wsUrl);
 
     // Bağlantı durumu değiştiğinde state güncelleme
@@ -203,41 +210,41 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children, wsUrl }) => 
         // Hata türünü belirleme ve anlamlı mesaj oluşturma
         let errorMessage = "WebSocket bağlantı hatası";
         let errorType: LogType = 'error';
-        
+
         if (error.type === 'error') {
             errorMessage = "Sunucu ile iletişim kurulamadı. Ağ bağlantınızı kontrol edin.";
         } else if (error.type === 'timeout') {
             errorMessage = "Bağlantı zaman aşımına uğradı. Sunucu yanıt vermiyor.";
         }
-        
+
         // Bağlantı hata durumunu güncelle
         dispatch({
             type: 'SET_CONNECTION_STATE',
             payload: { connectingError: errorMessage }
         });
-        
+
         // Hatayı logla
         dispatch({
             type: 'ADD_LOG',
-            payload: { 
-                message: `WebSocket hatası: ${errorMessage} (${error.type})`, 
-                type: errorType 
+            payload: {
+                message: `WebSocket hatası: ${errorMessage} (${error.type})`,
+                type: errorType
             }
         });
-        
+
         // İstatistikleri güncelle
         dispatch({
             type: 'UPDATE_STATS',
             payload: { failedRequests: state.stats.failedRequests + 1 }
         });
-        
+
         // Kullanıcıya öneriler sun
         setTimeout(() => {
             dispatch({
                 type: 'ADD_LOG',
-                payload: { 
-                    message: "Bağlantı sorunu devam ediyorsa, yedek sunucu seçeneğini kullanabilir veya istemci moduna geçebilirsiniz.", 
-                    type: 'info' 
+                payload: {
+                    message: "Bağlantı sorunu devam ediyorsa, yedek sunucu seçeneğini kullanabilir veya istemci moduna geçebilirsiniz.",
+                    type: 'info'
                 }
             });
         }, 3000);
@@ -327,16 +334,16 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children, wsUrl }) => 
         // Kullanıcıya bağlantı denemesi hakkında bilgi ver
         dispatch({
             type: 'ADD_LOG',
-            payload: { 
-                message: `${wsUrl} adresine bağlantı kurulmaya çalışılıyor...`, 
-                type: 'info' 
+            payload: {
+                message: `${wsUrl} adresine bağlantı kurulmaya çalışılıyor...`,
+                type: 'info'
             }
         });
 
         // Bağlantı sorunlarını daha iyi yönetmek için ek ayarlar
         wsService.updateReconnectSettings(10, 2000); // Daha fazla deneme ve artan bekleme süresi
         wsService.setConnectionTimeout(15000); // 15 saniye bağlantı zaman aşımı
-        
+
         // Bağlantıyı başlat
         console.log(`WebSocket bağlantısı başlatılıyor: ${wsUrl}`);
         wsService.connect();
@@ -345,20 +352,20 @@ export const AppProvider: React.FC<AppProviderProps> = ({ children, wsUrl }) => 
         const connectionCheckInterval = setInterval(() => {
             const isCurrentlyConnected = wsService.isConnected();
             const connectionStatus = wsService.getConnectionStatus();
-            
+
             // Bağlantı durum değişimini logla
             if (isCurrentlyConnected !== state.connection.isConnected) {
                 dispatch({
                     type: 'ADD_LOG',
-                    payload: { 
-                        message: `Bağlantı durumu değişti: ${connectionStatus}`, 
-                        type: isCurrentlyConnected ? 'success' : 'warning' 
+                    payload: {
+                        message: `Bağlantı durumu değişti: ${connectionStatus}`,
+                        type: isCurrentlyConnected ? 'success' : 'warning'
                     }
                 });
-                
+
                 dispatch({
                     type: 'SET_CONNECTION_STATE',
-                    payload: { 
+                    payload: {
                         isConnected: isCurrentlyConnected,
                         connectingError: isCurrentlyConnected ? null : 'Bağlantı kesildi'
                     }

@@ -11,6 +11,7 @@ export interface ConnectionState {
   connectingError: string | null;
   activeSymbol: string;
   debugMode: boolean;
+  serverUrl?: string;
 }
 
 export interface Stats {
